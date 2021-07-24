@@ -1,0 +1,34 @@
+{
+	"name": "corex-demangler",
+	"targetType": "library",
+	"sourcePaths": [
+		"source"
+	],
+	"importPaths": [
+		"source"
+	],
+	"dflags-ldc": ["-preview=dip1000"],
+	"dflags-dmd": ["-preview=dip1000"],
+	"dflags-gdc": ["-ftransition=dip1000"],
+	"configurations": [
+		{
+			"name": "default"
+		},
+		{
+			"name": "unittest",
+			"buildOptions": ["unittests"],
+      			"dflags": [ "-unittest" ],
+			"debug": ["trace"]
+		},
+		{
+			"name": "benchmark",
+			"buildOptions": ["unittests"],
+      			"dflags": [ "-debug=benchmark" ]
+		},
+		{
+			"name": "benchmark-release",
+			"buildOptions": ["unittests", "inline", "optimize", "noBoundsCheck", "releaseMode"],
+      			"dflags": [ "-debug=benchmark" ]
+		}
+	]
+}
