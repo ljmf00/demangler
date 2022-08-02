@@ -48,8 +48,9 @@ nothrow pure @safe:
     char[] doDemangle()
     {
         debug(trace) {
+            printf("--> + doDemangle buffer=%s\n", (buffer.buf ~ '\0').ptr);
             bool ret = parseMangledName();
-            printf("doDemangle buffer=%s data=%s\n", (buffer.buf ~ '\0').ptr, (data.arr ~ '\0').ptr);
+            printf("--> - doDemangle buffer=%s data=%s\n", (buffer.buf ~ '\0').ptr, (data.arr ~ '\0').ptr);
             return ret ? data.arr : buffer.buf.dup;
         }
         else return parseMangledName() ? data.arr : buffer.buf.dup;
@@ -88,7 +89,6 @@ private:
                 return res;
             }
 
-
             private T res = void;
         }
         else
@@ -110,9 +110,7 @@ private:
     // syntax sugar to infer T of a Result!T
     static Result!T result(T)(T value) { return Result!(T)(value); }
     static Result!T result(T)(bool hasValue) if(is(T == void)) { return Result!(T)(hasValue); }
-    static Result!T result(T)(ParserFlags pf) if(is(T == void)) { return Result!(T)(cast(bool)pf); }
     static Result!T result(T)() { return Result!(T).init; }
-    static Result!T result(T)(T value, ParserFlags pf) { return result!T(value, cast(bool) pf); }
     static Result!T result(T)(T value, bool hasValue)
     {
         return (hasValue)
@@ -126,9 +124,14 @@ private:
     static Result!T success(T)(Result!T retValue) { return retValue; }
 
     // syntax sugar for failed results
-    static Result!void fail()() { return Result!void(false); }
-    static auto fail(T)()
+    static Result!void fail(string msg = null, string func = __FUNCTION__)()
     {
+        mixin(failParser!(msg, func));
+        return Result!void(false);
+    }
+    static auto fail(string msg = null, T, string func = __FUNCTION__)()
+    {
+        mixin(failParser!(msg, func));
         static if (is(T == Result!Args, Args...))
             return T();
         else
@@ -166,6 +169,11 @@ private:
                 func ~
                 printfFormatter ~
             q{enum ParserFlags ppf = (pf & ParserFlags.Propagate) ? pf : ParserFlags.None;};
+    }
+
+    template failParser(string msg, string func = __FUNCTION__)
+    {
+        enum failParser = `debug(trace) printf("! ` ~ func ~ (msg ? ": " ~ msg : "") ~ `\n");`;
     }
 
     enum notImplementedParser = q{
@@ -276,7 +284,7 @@ private:
         mixin(initParser!());
 
         if(buffer.empty)
-            return result!void(pf & ParserFlags.Optional);
+            return result!void((pf & ParserFlags.Optional) != 0);
 
         switch(buffer.front)
         {
@@ -315,7 +323,7 @@ private:
                 break;
 
             default:
-                return result!void(pf & ParserFlags.Optional);
+                return result!void((pf & ParserFlags.Optional) != 0);
         }
         return success();
     }
@@ -473,13 +481,14 @@ private:
         // optional
         auto begPos = data.arr.length;
         if(!parseFuncAttrs!(ParserFlags.Optional)) return fail();
-
         auto endPos = data.arr.length;
+
         data ~= '(';
         // parse function parameters
         if(!parseParameters!(ParserFlags.Optional)) return fail();
         if(!parseParamClose()) return fail();
         data ~= ')';
+
         if(endPos - begPos)
         {
             data.shiftEnd(endPos-1 , endPos);
@@ -510,7 +519,7 @@ private:
     {
         mixin(initParser!());
 
-        if(buffer.front != 'N') return result!void(pf & ParserFlags.Optional);
+        if(buffer.front != 'N') return result!void((pf & ParserFlags.Optional) != 0);
 
         do
         {
@@ -551,7 +560,6 @@ private:
                     //       we see these, then we know we're really in the
                     //       parameter list.  Rewind and break.
                     --buffer.pos;
-                    debug(trace) printf("Going back with N\n");
                     return success();
                 case 'i': // @nogc
                     buffer.popFront();
@@ -595,7 +603,6 @@ private:
 
         for(size_t n; ; n++)
         {
-            debug(trace) printf("Parameter %d\n", n);
             // exit or append the comma
             switch(buffer.front)
             {
@@ -794,13 +801,17 @@ private:
                 parseLName();
                 data ~= "!(";
                 if(!parseTemplateArgs()) return fail();
-                if(!buffer.match('Z')) return fail();
+                if(!buffer.match('Z'))
+                {
+                    mixin(failParser!"Can't match 'Z'");
+                    return fail();
+                }
 
                 // check if saved position has a correspoding valid length
                 static if (pf & ParserFlags.TemplateNumber)
                 {
-                    debug(trace) printf("parseTemplateInstanceName::checkNumber beg=%lu end=%lu n=%lu\n", begPos, buffer.pos, n);
-                    if (buffer.pos - begPos != n) return fail();
+                    if (buffer.pos - begPos != n)
+                        return fail();
                 }
 
                 data ~= ")";
@@ -854,7 +865,8 @@ private:
                     if (t == 'Q')
                     {
                         auto ret = peekBackref();
-                        if(ret.error) return fail();
+                        if(ret.error)
+                            return fail!"Unknown backref"();
                         t = ret.value;
                     }
                     auto name = parseType!(ParserFlags.Silent)();
@@ -1290,14 +1302,6 @@ private:
                     default:
                         return typeof(return)(fail());
                 }
-                if (buffer.peek(1) != 'g')
-                    return typeof(return)(fail());
-                buffer.popFront();
-                buffer.popFront();
-                data ~= "inout ";
-                //TODO:
-                if (buffer.front == 'x')
-                    goto case 'x';
                 break;
 
             case 'A': // Arrays
@@ -1350,6 +1354,13 @@ private:
                     data.shiftEnd(endPos-1 , endPos);
                     data.shiftEnd(begPos, endPos-1);
                 }
+                break;
+
+            case 'P': // TypePointer
+                buffer.popFront();
+                ret = parseType();
+                if(!ret.success) return ret;
+                data ~= '*';
                 break;
 
             case 'Z': // Internal symbol
@@ -1539,7 +1550,7 @@ private:
             val = mulu(val, 10, overflow);
             val = addu(val, c - '0',  overflow);
             if (overflow)
-                return fail!(typeof(return));
+                return fail!("overflow on decoding", typeof(return));
         }
         return success(val);
     }
@@ -2057,7 +2068,7 @@ else
             ["_D8demangle2fnFNgiZNgi", "inout(int) demangle.fn(inout(int))"],
             ["_D8demangle29__T2fnVa97Va9Va0Vu257Vw65537Z2fnFZv", "void demangle.fn!('a', '\\t', \\x00, '\\u0101', '\\U00010001').fn()"],
             ["_D2gc11gctemplates56__T8mkBitmapTS3std5range13__T4iotaTiTiZ4iotaFiiZ6ResultZ8mkBitmapFNbNiNfPmmZv",
-             "nothrow @nogc @safe void gc.gctemplates.mkBitmap!(std.range.iota!(int, int).iota(int, int).Result).mkBitmap(ulong*, ulong)"],
+             "void gc.gctemplates.mkBitmap!(std.range.iota!(int, int).iota(int, int).Result).mkBitmap(ulong*, ulong) nothrow @nogc @safe"],
             ["_D8serenity9persister6Sqlite69__T15SqlitePersisterTS8serenity9persister6Sqlite11__unittest6FZ4TestZ15SqlitePersister12__T7opIndexZ7opIndexMFmZS8serenity9persister6Sqlite11__unittest6FZ4Test",
              "serenity.persister.Sqlite.__unittest6().Test serenity.persister.Sqlite.SqlitePersister!(serenity.persister.Sqlite.__unittest6().Test).SqlitePersister.opIndex!().opIndex(ulong)"],
             ["_D8bug100274mainFZ5localMFZi","int bug10027.main().local()"],
